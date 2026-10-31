@@ -1,0 +1,25 @@
+# Secrets (never upload these)
+.env
+*.p8
+*.pub
+.snowflake/
+profiles.yml
+creads
+
+# dbt generated files
+target/
+dbt_packages/
+logs/
+zomato/.user.yml
+
+# Airflow generated files
+airflow/logs/
+
+# Python / editor
+__pycache__/
+*.pyc
+.venv/
+.vscode/
+
+# Raw data files
+DATA/
