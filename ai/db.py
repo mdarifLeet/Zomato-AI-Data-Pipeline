@@ -15,10 +15,9 @@ DB_ENGINE = os.getenv("DB_ENGINE", "duckdb").lower()
 DEFAULT_DUCKDB_PATH = REPO_ROOT / "zomato" / "zomato.duckdb"
 
 CANDIDATE_MODELS = [
-    "gemini-3.8-flash",
-    "gemini-3.8-flash-lite",
     "gemini-3.5-flash",
-    "gemini-3.8-pro",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
 ]
 
 
@@ -36,9 +35,9 @@ def get_api_key() -> str:
 
 
 def get_model_name() -> str:
-    model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+    model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
     if model == "gemini-2.5-flash":
-        return "gemini-3.8-flash"
+        return "gemini-3.5-flash"
     return model
 
 
