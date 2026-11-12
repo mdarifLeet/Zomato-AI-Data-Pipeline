@@ -1,13 +1,11 @@
--- parse the messy dimension (-- →null, 50+ ratings→50, ₹ 200→200, city after last comma):
-
-select
-    try_to_number(id) as restaurant_id,
-    name as restaurant_name,
-    trim(regexp_replace(coalesce(regexp_substr(city, '[^,]+$'), city), '-[0-9]+$', '')) as city,
-    try_to_decimal(nullif(rating, '--'), 3, 1) as rating,
-    try_to_number(regexp_substr(replace(rating_count, ',', ''), '[0-9]+')) as rating_count,
-    try_to_number(regexp_substr(replace(cost, ',', ''), '[0-9]+')) as cost_for_two,
+SELECT
+    {{ try_int('id') }} AS restaurant_id,
+    name AS restaurant_name,
+    TRIM(REGEXP_REPLACE(COALESCE({{ regex_extract('city', '[^,]+$') }}, CAST(city AS VARCHAR)), '-[0-9]+$', '')) AS city,
+    {{ try_decimal("NULLIF(CAST(rating AS VARCHAR), '--')", 3, 1) }} AS rating,
+    {{ try_int(regex_extract("REPLACE(CAST(rating_count AS VARCHAR), ',', '')", '[0-9]+')) }} AS rating_count,
+    {{ try_int(regex_extract("REPLACE(CAST(cost AS VARCHAR), ',', '')", '[0-9]+')) }} AS cost_for_two,
     cuisine,
-    regexp_substr(lic_no, '[0-9]+') as license_no
-from {{ source('raw', 'restaurants') }}
-where try_to_number(id) is not null
+    {{ regex_extract('lic_no', '[0-9]+') }} AS license_no
+FROM {{ source('raw', 'restaurants') }}
+WHERE {{ try_int('id') }} IS NOT NULL

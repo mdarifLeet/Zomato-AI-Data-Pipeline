@@ -1,153 +1,146 @@
 import os
-import time
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import streamlit as st
-import snowflake.connector
 from google import genai
-from google.genai import types
-from cryptography.hazmat.primitives import serialization
-from dotenv import load_dotenv
-
-load_dotenv()
+from db import generate_with_retry, get_api_key, query_df
 
 EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
-CHAT_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 NEW_REVIEWS = 100
 TOP_K = 5
 BATCH_SIZE = 50
-CACHE_FILE = "review_embeddings.parquet"
+CACHE_FILE = Path(__file__).resolve().parent / "review_embeddings.parquet"
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+EXAMPLE_REVIEW_QUESTIONS = [
+    "What do customers say about delivery speed?",
+    "Are customers happy with value for price?",
+    "What complaints do customers have about food quality?",
+    "How is the service in Bangalore?",
+]
 
-
-def get_connection():
-    with open(os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH"), "rb") as f:
-        private_key = serialization.load_pem_private_key(
-            f.read(),
-            password=os.getenv("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE").encode(),
-        )
-    pkb = private_key.private_bytes(
-        encoding=serialization.Encoding.DER,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-    return snowflake.connector.connect(
-        user=os.getenv("SNOWFLAKE_USER"),
-        private_key=pkb,
-        account=os.getenv("SNOWFLAKE_ACCOUNT"),
-        warehouse=os.getenv("SNOWFLAKE_WAREHOUSE"),
-        database=os.getenv("SNOWFLAKE_DATABASE"),
-        schema=os.getenv("SNOWFLAKE_SCHEMA"),
-    )
+client = genai.Client(api_key=get_api_key())
 
 
-def read_reviews_from_snowflake():
-    conn = get_connection()
-    try:
-        query = f"""
-            SELECT REVIEW_ID, CITY, RATING, COMMENT
-            FROM ZOMATO.STAGING.STG_REVIEWS
-            WHERE COMMENT IS NOT NULL AND TRIM(COMMENT) <> ''
-            ORDER BY RANDOM()
-            LIMIT {NEW_REVIEWS}
-        """
-        df = conn.cursor().execute(query).fetch_pandas_all()
-    finally:
-        conn.close()
-
-    df.columns = [col.lower() for col in df.columns]
-    return df
-
-
-def embed(texts, task_type):
-    """Embed texts in small batches, waiting out free-tier rate limits."""
-    vectors = []
-    for i in range(0, len(texts), BATCH_SIZE):
-        batch = texts[i:i + BATCH_SIZE]
-        while True:
+@st.cache_data(show_spinner="Loading review embeddings...")
+def load_and_embed_reviews():
+    if CACHE_FILE.exists():
+        df = pd.read_parquet(CACHE_FILE)
+        df.columns = ["embedding" if c.lower() == "embedding" else c.upper() for c in df.columns]
+        if "RATING" not in df.columns or "CITY" not in df.columns:
             try:
-                response = client.models.embed_content(
-                    model=EMBEDDING_MODEL,
-                    contents=batch,
-                    config=types.EmbedContentConfig(task_type=task_type),
+                meta = query_df(
+                    "SELECT review_id, rating, city FROM stg_reviews",
+                    default_schema="STAGING",
                 )
-                break
-            except Exception as e:
-                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                    time.sleep(65)  # wait for the per-minute quota to reset
-                else:
-                    raise
-        vectors.extend(e.values for e in response.embeddings)
-        if i + BATCH_SIZE < len(texts):
-            time.sleep(35)  # 50 texts per 35 seconds stays under 100/minute
-    return vectors
+                df = df.drop(columns=[c for c in ("RATING", "CITY") if c in df.columns])
+                df = df.merge(meta, on="REVIEW_ID", how="left")
+                df.to_parquet(CACHE_FILE, index=False)
+            except Exception:
+                if "RATING" not in df.columns:
+                    df["RATING"] = "N/A"
+                if "CITY" not in df.columns:
+                    df["CITY"] = "N/A"
+        df["embedding"] = df["embedding"].apply(lambda x: np.array(x, dtype=np.float32))
+        return df
 
+    df = query_df(
+        f"SELECT review_id, comment, rating, city FROM stg_reviews WHERE comment IS NOT NULL LIMIT {NEW_REVIEWS}",
+        default_schema="STAGING",
+    )
 
-@st.cache_data()
-def load_reviews():
-    if os.path.exists(CACHE_FILE):
-        return pd.read_parquet(CACHE_FILE)
+    embeddings = []
+    comments = df["COMMENT"].tolist()
+    for i in range(0, len(comments), BATCH_SIZE):
+        batch = comments[i : i + BATCH_SIZE]
+        resp = client.models.embed_content(model=EMBEDDING_MODEL, contents=batch)
+        for e in resp.embeddings:
+            embeddings.append(e.values)
 
-    df = read_reviews_from_snowflake()
-    df["embedding"] = embed(df["comment"].tolist(), "RETRIEVAL_DOCUMENT")
-    df.to_parquet(CACHE_FILE)
+    df["embedding"] = embeddings
+    df.to_parquet(CACHE_FILE, index=False)
+    df["embedding"] = df["embedding"].apply(lambda x: np.array(x, dtype=np.float32))
     return df
 
 
-st.title("Chat with your Zomato Reviews")
-st.caption(f"Searching {NEW_REVIEWS} reviews, answering with {CHAT_MODEL}")
+def search_reviews(query: str, df: pd.DataFrame, top_k: int = TOP_K):
+    resp = client.models.embed_content(model=EMBEDDING_MODEL, contents=query)
+    query_emb = np.array(resp.embeddings[0].values, dtype=np.float32)
+
+    matrix = np.vstack(df["embedding"].values)
+    scores = np.dot(matrix, query_emb) / (np.linalg.norm(matrix, axis=1) * np.linalg.norm(query_emb))
+
+    top_idx = np.argsort(scores)[::-1][:top_k]
+    matched = df.iloc[top_idx].copy()
+    matched["score"] = scores[top_idx]
+    return matched
 
 
-def find_similar_reviews(question, df):
-    question_vector = np.array(embed([question], "RETRIEVAL_QUERY")[0])
-    review_matrix = np.array(df["embedding"].tolist())
+def rag_answer(query: str, context_df: pd.DataFrame) -> str:
+    context = "\n\n".join([
+        f"Rating: {row.get('RATING', 'N/A')}/5 | City: {row.get('CITY', 'N/A')}\nReview: {row.get('COMMENT', '')}"
+        for _, row in context_df.iterrows()
+    ])
 
-    # cosine similarity of the question against every review at once
-    scores = review_matrix @ question_vector / (
-        np.linalg.norm(review_matrix, axis=1) * np.linalg.norm(question_vector)
+    prompt = f"""
+    Answer the user's question using only the context reviews provided below.
+    If the context does not contain enough information, say so clearly.
+
+    Context:
+    {context}
+
+    Question: {query}
+    """
+    try:
+        return generate_with_retry(client=client, contents=prompt, temperature=0.2)
+    except Exception:
+        avg_rating = pd.to_numeric(context_df["RATING"], errors="coerce").mean()
+        cities = ", ".join(context_df["CITY"].dropna().astype(str).unique()[:4])
+        top_comments = "; ".join(context_df["COMMENT"].dropna().astype(str).head(3).tolist())
+        return (
+            f"Based on the top {len(context_df)} matching reviews (average rating {avg_rating:.1f}/5 "
+            f"across {cities}): {top_comments}"
+        )
+
+
+def main():
+    st.set_page_config(page_title="Zomato Review RAG Chat", layout="wide")
+    st.title("Zomato Customer Review Search & Q&A")
+
+    df = load_and_embed_reviews()
+    st.success(f"Loaded {len(df)} review embeddings.")
+
+    st.subheader("Example Questions")
+    cols = st.columns(len(EXAMPLE_REVIEW_QUESTIONS))
+    if "rag_question" not in st.session_state:
+        st.session_state["rag_question"] = ""
+    for idx, q in enumerate(EXAMPLE_REVIEW_QUESTIONS):
+        if cols[idx].button(q):
+            st.session_state["rag_question"] = q
+
+    query = st.text_input(
+        "Ask a question about customer reviews:",
+        key="rag_question",
+        placeholder="e.g. What are customers saying about food delivery in Bangalore?",
     )
 
-    df = df.copy()
-    df["score"] = scores
-    return df.nlargest(TOP_K, "score")
+    if query:
+        matches = search_reviews(query, df)
+        col1, col2 = st.columns([1, 1])
+
+        with col1:
+            st.subheader("Relevant Reviews")
+            for _, row in matches.iterrows():
+                st.markdown(f"**Rating:** {row.get('RATING', 'N/A')} | **City:** {row.get('CITY', 'N/A')} | **Similarity:** {row['score']:.2f}")
+                st.write(row.get("COMMENT", ""))
+                st.divider()
+
+        with col2:
+            st.subheader("AI Answer")
+            with st.spinner("Generating answer..."):
+                answer = rag_answer(query, matches)
+                st.write(answer)
 
 
-def ask_llm(question, top_reviews):
-    context = ""
-    for _, row in top_reviews.iterrows():
-        context += f"({row['city']}, {row['rating']} stars) {row['comment']}\n"
-
-    system_prompt = (
-        "Answer ONLY using the customer reviews provided. "
-        "Be concise. If the reviews don't cover it, say so."
-    )
-    user_prompt = f"Question: {question}\n\nReviews:\n{context}"
-
-    response = client.models.generate_content(
-        model=CHAT_MODEL,
-        contents=user_prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            temperature=0.2,
-        ),
-    )
-    return response.text
-
-
-review_df = load_reviews()
-
-question = st.text_input(
-    "Ask a question about your reviews:",
-    placeholder="e.g. What are the most common complaints about delivery?",
-)
-
-if question:
-    top_reviews = find_similar_reviews(question, review_df)
-    answer = ask_llm(question, top_reviews)
-
-    st.markdown("**Answer:**")
-    st.write(answer)
-
-    with st.expander("Reviews used to build this answer"):
-        st.dataframe(top_reviews[["city", "rating", "comment"]], hide_index=True)
+if __name__ == "__main__":
+    main()

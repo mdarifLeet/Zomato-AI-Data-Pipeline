@@ -1,30 +1,22 @@
 SELECT
     order_id,
-    order_timestamp,
-    order_date,
-    user_id AS customer_id,
-    r_id AS restaurant_id,
-    TRIM(
-        COALESCE(REGEXP_SUBSTR(restaurant_city, '[^,]+$'), restaurant_city)
-    ) AS city,
+    CAST(order_timestamp AS TIMESTAMP) AS order_timestamp,
+    CAST(order_date AS DATE) AS order_date,
+    {{ try_int('user_id') }} AS customer_id,
+    {{ try_int('r_id') }} AS restaurant_id,
+    TRIM(COALESCE({{ regex_extract('restaurant_city', '[^,]+$') }}, CAST(restaurant_city AS VARCHAR))) AS city,
     cuisine,
-    items_count,
-    sales_qty,
-    subtotal,
-    discount,
-    delivery_fee,
-    gst,
-    sales_amount,
+    {{ try_int('items_count') }} AS items_count,
+    {{ try_int('sales_qty') }} AS sales_qty,
+    {{ try_decimal('subtotal', 10, 2) }} AS subtotal,
+    {{ try_decimal('discount', 10, 2) }} AS discount,
+    {{ try_decimal('delivery_fee', 10, 2) }} AS delivery_fee,
+    {{ try_decimal('gst', 10, 2) }} AS gst,
+    {{ try_decimal('sales_amount', 10, 2) }} AS sales_amount,
     currency,
     payment_method,
     order_status,
-    (
-        order_status = 'Delivered'
-    ) AS is_delivered,
-    customer_rating,
-    delivery_time_min
-FROM
-    {{ source(
-        'raw',
-        'orders'
-    ) }}
+    (order_status = 'Delivered') AS is_delivered,
+    {{ try_decimal('customer_rating', 3, 1) }} AS customer_rating,
+    {{ try_decimal('delivery_time_min', 10, 2) }} AS delivery_time_min
+FROM {{ source('raw', 'orders') }}

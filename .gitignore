@@ -23,3 +23,8 @@ __pycache__/
 
 # Raw data files
 DATA/
+
+# Large data files (full exports are ~GBs)
+zomato/seeds/*.csv
+*.duckdb
+*.duckdb.wal
