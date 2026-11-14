@@ -1,0 +1,19 @@
+﻿zomato:
+  target: "{{ env_var('DBT_TARGET', 'duckdb') }}"
+  outputs:
+    duckdb:
+      type: duckdb
+      path: "{{ env_var('DUCKDB_PATH', 'zomato.duckdb') }}"
+      schema: RAW
+      threads: 4
+    snowflake:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT', '') }}"
+      user: "{{ env_var('SNOWFLAKE_USER', '') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'DBT_ROLE') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE', 'ZOMATO') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE', 'ZOMATO_WH') }}"
+      schema: STAGING
+      private_key_path: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PATH', '') }}"
+      private_key_passphrase: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PASSPHRASE', '') }}"
+      threads: 4

@@ -3,7 +3,6 @@
 *.p8
 *.pub
 .snowflake/
-profiles.yml
 creads
 
 # dbt generated files
