@@ -1,6 +1,6 @@
 import os
-import subprocess
-import sys
+import shutil
+import threading
 import time
 from pathlib import Path
 import pandas as pd
@@ -15,6 +15,8 @@ load_dotenv(REPO_ROOT / ".env")
 
 DB_ENGINE = os.getenv("DB_ENGINE", "duckdb").lower()
 DEFAULT_DUCKDB_PATH = REPO_ROOT / "zomato" / "zomato.duckdb"
+_INIT_LOCK = threading.Lock()
+_DB_READY = False
 
 CANDIDATE_MODELS = [
     "gemini-3.8-flash",
@@ -213,60 +215,61 @@ BOOTSTRAP_SQL = [
 
 
 def ensure_duckdb_initialized(db_path: str) -> None:
-    import duckdb
-
-    path_obj = Path(db_path)
-    needs_init = not path_obj.exists()
-    if not needs_init:
-        try:
-            check_conn = duckdb.connect(str(path_obj), read_only=True)
-            tables = check_conn.execute(
-                "SELECT count(*) FROM information_schema.tables WHERE LOWER(table_schema) = 'marts'"
-            ).fetchone()[0]
-            check_conn.close()
-            needs_init = tables == 0
-        except Exception:
-            needs_init = True
-
-    if not needs_init:
+    global _DB_READY
+    if _DB_READY:
         return
 
-    path_obj.parent.mkdir(parents=True, exist_ok=True)
-    seeds_dir = REPO_ROOT / "zomato" / "seeds_sample"
-    raw_tables = ["restaurants", "users", "food", "menu", "orders", "order_items", "reviews"]
+    with _INIT_LOCK:
+        if _DB_READY:
+            return
 
-    conn = duckdb.connect(str(path_obj), read_only=False)
-    try:
-        conn.execute("CREATE SCHEMA IF NOT EXISTS RAW")
-        for t in raw_tables:
-            csv_file = (seeds_dir / f"{t}.csv").as_posix()
-            conn.execute(
-                f"CREATE OR REPLACE TABLE RAW.{t} AS SELECT * FROM read_csv_auto('{csv_file}', all_varchar=true)"
-            )
-    finally:
-        conn.close()
+        import duckdb
 
-    # Try running dbt if installed; otherwise execute the exact staging + marts SQL directly in DuckDB
-    zomato_dir = REPO_ROOT / "zomato"
-    dbt_succeeded = False
-    try:
-        res = subprocess.run(
-            [sys.executable, "-m", "dbt.cli.main", "run", "--project-dir", str(zomato_dir), "--profiles-dir", str(zomato_dir)],
-            cwd=str(zomato_dir),
-            capture_output=True,
-            timeout=60,
-        )
-        dbt_succeeded = res.returncode == 0
-    except Exception:
-        dbt_succeeded = False
+        path_obj = Path(db_path)
+        if path_obj.exists():
+            try:
+                check_conn = duckdb.connect(str(path_obj), read_only=True)
+                try:
+                    tables = check_conn.execute(
+                        "SELECT count(*) FROM information_schema.tables WHERE LOWER(table_schema) = 'marts'"
+                    ).fetchone()[0]
+                finally:
+                    check_conn.close()
+                if tables >= 5:
+                    _DB_READY = True
+                    return
+            except Exception:
+                pass
 
-    if not dbt_succeeded:
-        conn = duckdb.connect(str(path_obj), read_only=False)
+        # Build atomically in a temporary file first so concurrent threads never collide
+        path_obj.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path_obj.parent / f"build_{os.getpid()}.duckdb"
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+        seeds_dir = REPO_ROOT / "zomato" / "seeds_sample"
+        raw_tables = ["restaurants", "users", "food", "menu", "orders", "order_items", "reviews"]
+
+        conn = duckdb.connect(str(tmp_path), read_only=False)
         try:
+            conn.execute("CREATE SCHEMA IF NOT EXISTS RAW")
+            for t in raw_tables:
+                csv_file = (seeds_dir / f"{t}.csv").as_posix()
+                conn.execute(
+                    f"CREATE OR REPLACE TABLE RAW.{t} AS SELECT * FROM read_csv_auto('{csv_file}', all_varchar=true)"
+                )
             for stmt in BOOTSTRAP_SQL:
                 conn.execute(stmt)
         finally:
             conn.close()
+
+        if path_obj.exists():
+            try:
+                path_obj.unlink()
+            except Exception:
+                pass
+        shutil.move(str(tmp_path), str(path_obj))
+        _DB_READY = True
 
 
 def get_api_key() -> str:
