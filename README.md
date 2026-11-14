@@ -1,11 +1,17 @@
-# Zomato AI Data Pipeline
-
 ## 🚀 Live Demo
-**Try the app:** [mdarif-zomato-ai-data-pipeline.streamlit.app](https://mdarif-zomato-ai-data-pipeline.streamlit.app)
 
-> The app runs on Streamlit Community Cloud's free tier. If it shows a "Yes, get this app back up!" button, click it and wait about a minute.
+| App | What it does | Link |
+|-----|--------------|------|
+| Text-to-SQL Analytics | Ask questions in plain English and get the generated SQL plus results from DuckDB | [Open app](https://mdarif-zomato-ai-data-pipeline.streamlit.app) |
+| Customer Review Search & Q&A | RAG app that retrieves relevant customer reviews using embeddings and answers questions about them | [Open app](https://mdarif-ragchat-zomato-ai-data-pipeline.streamlit.app/) |
 
-Ask questions like *"Top 10 cities by GMV"* or *"Cancel rate by payment method"* and the app generates the SQL and shows the results.
+> **Note on data:** The hosted demos run on a small sample (e.g. 100 customer reviews and a sample dataset in `seeds_sample`) because the full dataset is too large for GitHub and Streamlit's free tier. The full pipeline runs locally.
+
+> Both apps run on Streamlit Community Cloud's free tier. If one shows a "Yes, get this app back up!" button, click it and wait about a minute.
+
+**Try asking:**
+- Text-to-SQL: *"Top 10 cities by GMV"*, *"Cancel rate by payment method"*
+- Review Q&A: *"What do customers say about delivery speed?"*, *"How is the service in Bangalore?"*
 
 An ELT pipeline for a synthetic food-delivery dataset (10M orders, 23M order items). Raw files are loaded into **Snowflake** through an internal stage, **dbt** builds tested staging and mart layers, **Airflow** orchestrates it in Docker, and **Gemini**-powered scripts add text-to-SQL and review search on top.
 
