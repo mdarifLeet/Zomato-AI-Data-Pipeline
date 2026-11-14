@@ -1,5 +1,12 @@
 # Zomato AI Data Pipeline
 
+## 🚀 Live Demo
+**Try the app:** [mdarif-zomato-ai-data-pipeline.streamlit.app](https://mdarif-zomato-ai-data-pipeline.streamlit.app)
+
+> The app runs on Streamlit Community Cloud's free tier. If it shows a "Yes, get this app back up!" button, click it and wait about a minute.
+
+Ask questions like *"Top 10 cities by GMV"* or *"Cancel rate by payment method"* and the app generates the SQL and shows the results.
+
 An ELT pipeline for a synthetic food-delivery dataset (10M orders, 23M order items). Raw files are loaded into **Snowflake** through an internal stage, **dbt** builds tested staging and mart layers, **Airflow** orchestrates it in Docker, and **Gemini**-powered scripts add text-to-SQL and review search on top.
 
 The same dbt project also runs on **DuckDB** and **PostgreSQL**, so anyone can run it locally at zero cost with a small sample dataset included in this repo.
